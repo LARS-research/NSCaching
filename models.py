@@ -8,16 +8,12 @@ class BaseModule(nn.Module):
         self.lamb = args.lamb
         self.p = args.p         # norm
         self.margin = args.margin
-        self.temp = args.temp
 
     def init_weight(self):
         for param in self.parameters():
             nn.init.xavier_uniform_(param.data)
 
     def score(self, head, tail, rela):
-        raise NotImplementedError
-
-    def dist(self, head, tail, rela):
         raise NotImplementedError
 
     def prob_logit(self, head, tail, rela):
@@ -27,9 +23,9 @@ class BaseModule(nn.Module):
         return F.softmax(self.prob_logit(head, tail, rela), dim=-1)
 
     def pair_loss(self, head, tail, rela, n_head, n_tail):
-        d_pos = self.dist(head, tail, rela)
-        d_neg = self.dist(n_head, n_tail, rela)
-        return torch.sum(F.relu(self.margin + d_pos - d_neg))
+        d_pos = self.score(head, tail, rela)
+        d_neg = self.score(n_head, n_tail, rela)
+        return F.relu(self.margin + d_pos - d_neg)
 
     def softmax_loss(self, head, tail, rela):
         rela = rela.unsqueeze(-1).expand_as(head)
@@ -40,13 +36,13 @@ class BaseModule(nn.Module):
         return -truth_probs
 
     def point_loss(self, head, tail, rela, label):
-        softplus = torch.nn.Softplus().cuda()
+        softplus = torch.nn.Softplus()
         score = self.forward(head, tail, rela)
-        score = torch.sum(softplus(-1*label*score))
+        score = softplus(-1*label*score)
         return score
 
     def sigmoid_loss(self, head,tail, rela, n_head, n_tail):
-        logsigmoid = torch.nn.LogSigmoid().cuda()
+        logsigmoid = torch.nn.LogSigmoid()
         p_score = self.forward(head, tail, rela)
         n_score = self.forward(n_head, n_tail, rela.unsqueeze(1))
         p_score = torch.sum(logsigmoid(p_score))
@@ -70,14 +66,11 @@ class TransEModule(BaseModule):
         rela_embed = self.rel_embed(rela)
         return torch.norm(tail_embed - head_embed - rela_embed, p=self.p, dim=-1).view(shape)
 
-    def dist(self, head, tail, rela):
-        return self.forward(head, tail, rela)
-
     def score(self, head, tail, rela):
         return self.forward(head, tail, rela)
 
     def prob_logit(self, head, tail, rela):
-        return -self.forward(head, tail, rela) / self.temp
+        return -self.forward(head, tail, rela)
 
 
 class TransDModule(BaseModule):
@@ -114,14 +107,11 @@ class TransDModule(BaseModule):
         tail_proj = self._transfer(tail_e, tail_t, rela_t)
         return torch.norm(tail_proj - head_proj - rela_e, p=self.p, dim=-1).view(shape)
 
-    def dist(self, head, tail, rela):
-        return self.forward(head, tail, rela)
-
     def score(self, head, tail, rela):
         return self.forward(head, tail, rela)
 
     def prob_logit(self, head, tail, rela):
-        return -self.forward(head, tail, rela) / self.temp
+        return -self.forward(head, tail, rela)
 
 
 class TransHModule(BaseModule):
@@ -145,14 +135,11 @@ class TransHModule(BaseModule):
         tail_proj = tail_embed - torch.sum(w_embed * tail_embed, dim=-1, keepdim=True) * w_embed
         return torch.norm(tail_proj - head_proj - rela_embed, p=self.p, dim=-1).view(shape)
 
-    def dist(self, head, tail, rela):
-        return self.forward(head, tail, rela)
-
     def score(self, head, tail, rela):
         return self.forward(head, tail, rela)
 
     def prob_logit(self, head, tail, rela):
-        return -self.forward(head, tail, rela) / self.temp
+        return -self.forward(head, tail, rela)
 
 class DistMultModule(BaseModule):
     def __init__(self, n_ent, n_rel, args):
@@ -172,14 +159,11 @@ class DistMultModule(BaseModule):
         rela_embed = self.rel_embed(rela)
         return torch.sum(tail_embed * head_embed * rela_embed, dim=-1).view(shapes)
 
-    def dist(self, head, tail, rela):
-        return -self.forward(head, tail, rela)
-
     def score(self, head, tail, rela):
         return -self.forward(head, tail, rela)
 
     def prob_logit(self, head, tail, rela):
-        return self.forward(head, tail, rela)/self.temp
+        return self.forward(head, tail, rela)
 
 
 class ComplExModule(BaseModule):
@@ -212,14 +196,11 @@ class ComplExModule(BaseModule):
                 - torch.sum(rela_im_embed * head_im_embed * tail_re_embed, dim=-1)
         return score.view(shapes)
 
-    def dist(self, head, tail, rela):
-        return -self.forward(head, tail, rela)
-
     def score(self, head, tail, rela):
         return -self.forward(head, tail, rela)
 
     def prob_logit(self, head, tail, rela):
-        return self.forward(head, tail, rela)/self.temp
+        return self.forward(head, tail, rela)
 
 class SimplEModule(BaseModule):
     def __init__(self, n_ent, n_rel, args):
@@ -249,12 +230,50 @@ class SimplEModule(BaseModule):
                 + torch.sum(head_inv_embed * rela_inv_embed * tail_inv_embed, dim=-1)
         return score.view(shapes)
 
-    def dist(self, head, tail, rela):
+    def score(self, head, tail, rela):
         return -self.forward(head, tail, rela)
+
+    def prob_logit(self, head, tail, rela):
+        return self.forward(head, tail, rela)
+
+
+class RotatEModule(BaseModule):
+    def __init__(self, n_ent, n_rel, args):
+        super(RotatEModule, self).__init__(n_ent, n_rel, args)
+
+        self.ent_re_embed = nn.Embedding(n_ent, args.hidden_dim)
+        self.ent_im_embed = nn.Embedding(n_ent, args.hidden_dim)
+
+        self.rel_re_embed = nn.Embedding(n_rel, args.hidden_dim)
+        self.rel_im_embed = nn.Embedding(n_rel, args.hidden_dim)
+        self.init_weight()
+
+    def forward(self, head, tail, rela):
+        shapes = head.size()
+        head = head.contiguous().view(-1)
+        tail = tail.contiguous().view(-1)
+        rela = rela.contiguous().view(-1)
+
+        head_re_embed = self.ent_re_embed(head)
+        head_im_embed = self.ent_im_embed(head)
+        tail_re_embed = self.ent_re_embed(tail)
+        tail_im_embed = self.ent_im_embed(tail)
+        rela_re_embed = self.rel_re_embed(rela)
+        rela_im_embed = self.rel_im_embed(rela)
+        rela_norm = torch.sqrt(rela_re_embed**2 + rela_im_embed**2 + 1e-10)
+        rela_re_embed = rela_re_embed/rela_norm
+        rela_im_embed = rela_im_embed/rela_norm
+
+        re_score = head_re_embed*rela_re_embed - head_im_embed*rela_im_embed - tail_re_embed
+        im_score = head_re_embed*rela_im_embed + head_im_embed*rela_re_embed - tail_im_embed
+        score = torch.sqrt(re_score**2 + im_score**2 + 1e-10).sum(dim=-1)
+        score = self.margin - score
+
+        return score.view(shapes)
 
     def score(self, head, tail, rela):
         return -self.forward(head, tail, rela)
 
     def prob_logit(self, head, tail, rela):
-        return self.forward(head, tail, rela)/self.temp
+        return self.forward(head, tail, rela)
 

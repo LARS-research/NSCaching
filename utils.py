@@ -10,8 +10,15 @@ def logger_init(args):
         logging.getLogget().addHandler(logging.FileHandler(log_filename))
 
 def plot_config(args):
-    out_str = "\noptim:{} r:{} lamb:{}, d:{}, temp:{}, lr:{}, N_1:{}, N_2:{}\n".format(
-            args.optim, args.margin, args.lamb, args.hidden_dim, args.temp, args.lr, args.N_1, args.N_2)
+    out_str = "\noptim:{} r:{} lamb:{}, d:{}, n_batch:{}, temp:{}, lr:{}, N_1:{}, N_2:{}\n".format(
+            args.optim, args.margin, args.lamb, args.hidden_dim, args.n_batch, args.temp, args.lr, args.N_1, args.N_2)
+    with open(args.perf_file, 'a') as f:
+        f.write(out_str)
+
+def plot_config_auto(args):
+    out_str = "\noptim:{} r:{} lamb:{}, d:{}, lr:{}, n_batch:{}, N_1:{}, N_2:{} a1:{} a2:{}, a3:{}\n".format(
+            args.optim, args.margin, args.lamb, args.hidden_dim, args.lr, args.n_batch, args.N_1, args.N_2, args.alpha_1, args.alpha_2, args.alpha_3)
+    print(out_str)
     with open(args.perf_file, 'a') as f:
         f.write(out_str)
 

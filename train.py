@@ -9,7 +9,7 @@ from base_model import BaseModel
 
 # TODO
 
-parser = argparse.ArgumentParser(description="Parser for Knowledge Graph Embedding")
+parser = argparse.ArgumentParser(description="Parser for NSCaching")
 parser.add_argument('--task_dir', type=str, default='../KG_Data/FB15K', help='the directory to dataset')
 parser.add_argument('--model', type=str, default='ComplEx',  help='scoring function, support [TransE, TransD, TransH, DistMult, ComplEx, SimplE]')
 parser.add_argument('--sample', type=str, default='unif', help='sampling method from the cache')
@@ -21,9 +21,9 @@ parser.add_argument('--s_epoch', type=int, default=1000, help='which epoch shoul
 parser.add_argument('--load', type=bool, default=False, help='whether load from pretrain model')
 parser.add_argument('--optim', type=str, default='adam', help='optimization method')
 parser.add_argument('--margin', type=float, default=4.0, help='set margin value for pair loss')
+parser.add_argument('--temp', type=float, default=1.0, help='set temperature value')
 parser.add_argument('--lamb', type=float, default=0.01, help='set weight decay value')
 parser.add_argument('--hidden_dim', type=int, default=100, help='set embedding dimension')
-parser.add_argument('--temp', type=float, default=2.0, help='set temporature value to avoid device trigger')
 parser.add_argument('--gpu', type=str, default='0', help='set gpu #')
 parser.add_argument('--p', type=int, default=1, help='set distance norm')
 parser.add_argument('--lr', type=float, default=0.0001, help='set learning rate')

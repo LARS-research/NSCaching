@@ -1,4 +1,5 @@
 import torch
+import torch.nn.functional as F
 import numpy as np
 from torch.autograd import Variable
 from metrics import mrr_mr_hitk
@@ -7,7 +8,7 @@ import logging
 import os
 import time
 from torch.optim import Adam, SGD, Adagrad
-from models import TransDModule, TransEModule, TransHModule, DistMultModule, ComplExModule, SimplEModule
+from models import TransDModule, TransEModule, TransHModule, DistMultModule, ComplExModule, SimplEModule, RotatEModule
 
 class BaseModel(object):
     def __init__(self, n_ent, n_rel, args):
@@ -23,6 +24,8 @@ class BaseModel(object):
             self.model = ComplExModule(n_ent, n_rel, args)
         elif args.model == 'SimplE':
             self.model = SimplEModule(n_ent, n_rel, args)
+        elif args.model == 'RotatE':
+            self.model = RotatEModule(n_ent, n_rel, args)
         else:
             raise NotImplementedError
 
@@ -32,6 +35,7 @@ class BaseModel(object):
         self.weight_decay = args.lamb * args.n_batch / args.n_train
         self.time_tot = 0
         self.args = args
+        self.cache_score = np.random.randn(args.n_train,)   # used for sampling positive triplets
 
 
     def save(self, filename):
@@ -75,114 +79,123 @@ class BaseModel(object):
         return self.count_pos / length
     
 
-    def update_cache(self, head, tail, rela, head_idx, tail_idx):
+    def update_cache(self, head, tail, rela, idx, head_idx, tail_idx):
         ''' update the cache with different schemes '''
-        head_idx, head_uniq = np.unique(head_idx, return_index=True)
-        tail_idx, tail_uniq = np.unique(tail_idx, return_index=True)
-
-        tail_h = tail[head_uniq]
-        rela_h = rela[head_uniq]
-
-        rela_t = rela[tail_uniq]
-        head_t = head[tail_uniq]
+        batch_size = len(head_idx)
 
         # get candidate for updating the cache
         h_cache = self.head_cache[head_idx]
         t_cache = self.tail_cache[tail_idx]
-        h_cand = np.concatenate([h_cache, np.random.choice(self.n_ent, (len(head_idx), self.args.N_2))], 1)
-        t_cand = np.concatenate([t_cache, np.random.choice(self.n_ent, (len(tail_idx), self.args.N_2))], 1)
+        rand1 = np.random.choice(self.n_ent, (batch_size, self.args.N_2))
+        rand2 = np.random.choice(self.n_ent, (batch_size, self.args.N_2))
+        h_cand = np.concatenate([h_cache, rand1], 1)
+        t_cand = np.concatenate([t_cache, rand2], 1)
         h_cand = torch.from_numpy(h_cand).type(torch.LongTensor).cuda()
         t_cand = torch.from_numpy(t_cand).type(torch.LongTensor).cuda()
 
         # expand for computing scores/probs
-        rela_h = rela_h.unsqueeze(1).expand(-1, self.args.N_1 + self.args.N_2)
-        tail_h = tail_h.unsqueeze(1).expand(-1, self.args.N_1 + self.args.N_2)
-        head_t = head_t.unsqueeze(1).expand(-1, self.args.N_1 + self.args.N_2)
-        rela_t = rela_t.unsqueeze(1).expand(-1, self.args.N_1 + self.args.N_2)
+        head = head.unsqueeze(1).expand(-1, self.args.N_1 + self.args.N_2)
+        tail = tail.unsqueeze(1).expand(-1, self.args.N_1 + self.args.N_2)
+        rela = rela.unsqueeze(1).expand(-1, self.args.N_1 + self.args.N_2)
 
-        h_probs = self.model.prob(h_cand, tail_h, rela_h)
-        t_probs = self.model.prob(head_t, t_cand, rela_t)
+        # for negative triplets, larger loss approximates larger gradient
+        h_logits = self.model.point_loss(head, tail, rela, 1) + self.model.point_loss(h_cand, tail, rela, -1)
+        t_logits = self.model.point_loss(head, tail, rela, 1) + self.model.point_loss(head, t_cand, rela, -1)
 
-        if self.args.update == 'IS':
-            h_new = torch.multinomial(h_probs, self.args.N_1, replacement=False)
-            t_new = torch.multinomial(t_probs, self.args.N_1, replacement=False)
-        elif self.args.update == 'top':
-            _, h_new = torch.topk(h_probs,  k=self.args.N_1, dim=-1)
-            _, t_new = torch.topk(t_probs,  k=self.args.N_1, dim=-1)
+        # normarlize the logits
+        h_logits_np = h_logits.data.cpu().numpy()
+        quant_lo = np.repeat(np.quantile(h_logits_np, 0.1, axis=1, keepdims=True), h_logits_np.shape[1], axis=1)
+        quant_hi = np.repeat(np.quantile(h_logits_np, 0.9, axis=1, keepdims=True), h_logits_np.shape[1], axis=1)
+        ind_lo = h_logits_np<quant_lo
+        ind_hi = h_logits_np>quant_hi
+        h_logits_np[ind_lo] = quant_lo[ind_lo]
+        h_logits_np[ind_hi] = quant_hi[ind_hi]
+        quant = np.maximum(1e-4, quant_hi - quant_lo)
+        h_logits_np = (h_logits_np-quant_lo)/quant
+        h_logits_np = torch.FloatTensor(h_logits_np).cuda()
 
-        h_idx = torch.arange(0, len(head_idx)).type(torch.LongTensor).unsqueeze(1).expand(-1, self.args.N_1)
-        t_idx = torch.arange(0, len(tail_idx)).type(torch.LongTensor).unsqueeze(1).expand(-1, self.args.N_1)
-        h_rep = h_cand[h_idx, h_new]
-        t_rep = t_cand[t_idx, t_new]
+        t_logits_np = t_logits.data.cpu().numpy()
+        quant_lo = np.repeat(np.quantile(t_logits_np, 0.1, axis=1, keepdims=True), t_logits_np.shape[1], axis=1)
+        quant_hi = np.repeat(np.quantile(t_logits_np, 0.9, axis=1, keepdims=True), t_logits_np.shape[1], axis=1)
+        ind_lo = t_logits_np<quant_lo
+        ind_hi = t_logits_np>quant_hi
+        t_logits_np[ind_lo] = quant_lo[ind_lo]
+        t_logits_np[ind_hi] = quant_hi[ind_hi]
+        quant = np.maximum(1e-4, quant_hi - quant_lo)
+        t_logits_np = (t_logits_np-quant_lo)/quant
+        t_logits_np = torch.FloatTensor(t_logits_np).cuda()
+
+        # sampling and update the cache
+        h_probs = F.softmax(h_logits_np * self.args.alpha_3, dim=-1)
+        t_probs = F.softmax(t_logits_np * self.args.alpha_3, dim=-1)
+
+        h_new = torch.multinomial(h_probs, self.args.N_1, replacement=False)
+        t_new = torch.multinomial(t_probs, self.args.N_1, replacement=False)
+
+        row_idx = torch.arange(0, batch_size).type(torch.LongTensor).unsqueeze(1).expand(-1, self.args.N_1)
+        h_rep = h_cand[row_idx, h_new]
+        t_rep = t_cand[row_idx, t_new]
 
         self.head_cache[head_idx] = h_rep.cpu().numpy()
         self.tail_cache[tail_idx] = t_rep.cpu().numpy()
+        self.cache_score[idx] = torch.sum(h_logits[row_idx, h_new] + t_logits[row_idx, t_new], 1).data.cpu().numpy()
+        self.head_score[head_idx] = h_logits[row_idx, h_new].data.cpu().numpy()
+        self.tail_score[tail_idx] = t_logits[row_idx, t_new].data.cpu().numpy()
 
 
     def neg_sample(self, head, tail, rela, head_idx, tail_idx, sample='basic', loss='pair'):
-        '''
-        negative sampling schems
-        '''
-        if sample == 'bern':    # Bernoulli
+        if sample == 'bern':    # Bernoulli sampling
             n = head_idx.shape[0]
             h_idx = np.random.randint(low=0, high=self.n_ent, size=(n, self.args.n_sample))
             t_idx = np.random.randint(low=0, high=self.n_ent, size=(n, self.args.n_sample))
+            h_rand = torch.LongTensor(h_idx).cuda()
+            t_rand = torch.LongTensor(t_idx).cuda()
+        else:
+            '''
+            negative sampling scheme based on alpha
+            '''
+            h_logits = self.head_score[head_idx]
+            quant_lo = np.repeat(np.quantile(h_logits, 0.1, axis=1, keepdims=True), h_logits.shape[1], axis=1)
+            quant_hi = np.repeat(np.quantile(h_logits, 0.9, axis=1, keepdims=True), h_logits.shape[1], axis=1)
+            ind_lo = h_logits<quant_lo
+            ind_hi = h_logits>quant_hi
+            h_logits[ind_lo] = quant_lo[ind_lo]
+            h_logits[ind_hi] = quant_hi[ind_hi]
+            quant = np.maximum(1e-4, quant_hi - quant_lo)
+            h_logits = (h_logits-quant_lo)/quant
 
-        elif sample == 'unif':     # NSCaching + uniform
-            randint = np.random.randint(low=0, high=self.args.N_1, size=(head.shape[0],))
-            h_idx = self.head_cache[head_idx, randint]
-            t_idx = self.tail_cache[tail_idx, randint]
+            t_logits = self.tail_score[tail_idx]
+            quant_lo = np.repeat(np.quantile(t_logits, 0.1, axis=1, keepdims=True), t_logits.shape[1], axis=1)
+            quant_hi = np.repeat(np.quantile(t_logits, 0.9, axis=1, keepdims=True), t_logits.shape[1], axis=1)
+            ind_lo = t_logits<quant_lo
+            ind_hi = t_logits>quant_hi
+            t_logits[ind_lo] = quant_lo[ind_lo]
+            t_logits[ind_hi] = quant_hi[ind_hi]
+            quant = np.maximum(1e-4, quant_hi - quant_lo)
+            t_logits = (t_logits-quant_lo)/quant
 
-        elif sample == 'IS':        # NSCaching + IS
-            n = head.size(0)
-            h_cand = torch.from_numpy(self.head_cache[head_idx]).type(torch.LongTensor).cuda()
-            t_cand = torch.from_numpy(self.tail_cache[tail_idx]).type(torch.LongTensor).cuda()
-
-            head = head.unsqueeze(1).expand_as(h_cand)
-            tail = tail.unsqueeze(1).expand_as(h_cand)
-            rela = rela.unsqueeze(1).expand_as(h_cand)
-
-            h_probs = self.model.prob(h_cand, tail, rela)
-            t_probs = self.model.prob(head, t_cand, rela)
-            h_new = torch.multinomial(h_probs, 1).squeeze()     # importance sampling
-            t_new = torch.multinomial(t_probs, 1).squeeze()
-            row_idx = torch.arange(0, n).type(torch.LongTensor)
-
-            h_idx = h_cand[row_idx, h_new].cpu().numpy()
-            t_idx = t_cand[row_idx, t_new].cpu().numpy()
-
-        elif sample == 'top':       # NSCaching + top
-            n = head.size(0)
-            h_cand = torch.from_numpy(self.head_cache[head_idx]).type(torch.LongTensor).cuda()
-            t_cand = torch.from_numpy(self.tail_cache[tail_idx]).type(torch.LongTensor).cuda()
-
-            head = head.unsqueeze(1).expand_as(h_cand)
-            tail = tail.unsqueeze(1).expand_as(h_cand)
-            rela = rela.unsqueeze(1).expand_as(h_cand)
-
-            h_scores = self.model.prob(h_cand, tail, rela)
-            t_scores = self.model.prob(head, t_cand, rela)
-            h_new = torch.argmax(h_scores,  dim=-1)     # sample the top-1
-            t_new = torch.argmax(t_scores,  dim=-1)
-            row_idx = torch.arange(0, n).type(torch.LongTensor)
-
-            h_idx = h_cand[row_idx, h_new].cpu().numpy()
-            t_idx = t_cand[row_idx, t_new].cpu().numpy()
-
-        h_rand = torch.LongTensor(h_idx).cuda()
-        t_rand = torch.LongTensor(t_idx).cuda()
+            #h_logits = self.head_score[head_idx]
+            #t_logits = self.tail_score[tail_idx]
+            head_probs = F.softmax(torch.FloatTensor(h_logits).cuda() * self.args.alpha_2, dim=-1)
+            tail_probs = F.softmax(torch.FloatTensor(t_logits).cuda() * self.args.alpha_2, dim=-1)
+            head_new = torch.multinomial(head_probs, 1).squeeze().cpu().numpy()
+            tail_new = torch.multinomial(tail_probs, 1).squeeze().cpu().numpy()
+            h_rand = torch.LongTensor(self.head_cache[head_idx, head_new]).cuda()
+            t_rand = torch.LongTensor(self.tail_cache[tail_idx, tail_new]).cuda()
         return h_rand, t_rand
 
 
     def train(self, train_data, caches, corrupter, tester_val, tester_tst):
-        head, tail, rela = train_data
+        heads, tails, relas = train_data
         # useful information related to cache
-        head_idx, tail_idx, self.head_cache, self.tail_cache, self.head_pos, self.tail_pos = caches
-        n_train = len(head)
+        head_idxs, tail_idxs, self.head_cache, self.tail_cache, self.head_pos, self.tail_pos = caches
+        self.head_score = np.random.randn(len(self.head_cache), self.args.N_1)
+        self.tail_score = np.random.randn(len(self.tail_cache), self.args.N_1)
+        n_train = len(heads)
 
         if self.args.optim=='adam' or self.args.optim=='Adam':
             self.optimizer = Adam(self.model.parameters(), lr=self.args.lr, weight_decay=self.weight_decay)
-        elif self.args.optim=='adagrad' or self.args.optim=='adagrad':
+        elif self.args.optim=='adagrad' or self.args.optim=='Adagrad':
             self.optimizer = Adagrad(self.model.parameters(), lr=self.args.lr, weight_decay=self.weight_decay)
         else:
             self.optimizer = SGD(self.model.parameters(), lr=self.args.lr, weight_decay=self.weight_decay)
@@ -191,29 +204,45 @@ class BaseModel(object):
         n_batch = self.args.n_batch
         best_mrr = 0
 
+        losses = []
         for epoch in range(n_epoch):
             start = time.time()
-
             self.epoch = epoch
-            rand_idx = torch.randperm(n_train)
-            head = head[rand_idx].cuda()
-            tail = tail[rand_idx].cuda()
-            rela = rela[rand_idx].cuda()
-            head_idx = head_idx[rand_idx.numpy()]
-            tail_idx = tail_idx[rand_idx.numpy()]
+
+            # positive sampling
+            logits = self.cache_score
+            quant_lo = np.quantile(logits, 0.2)
+            quant_hi  = np.quantile(logits, 0.8)
+            logits[logits<quant_lo] = quant_lo
+            logits[logits>quant_hi] = quant_hi
+            logits = (logits-quant_lo)/(quant_hi - quant_lo)
+            logits = logits * self.args.alpha_1
+            probb = np.exp(logits) / np.exp(logits).sum()
+            if epoch == 0:      # use uniform sampling for the first epoch
+                probb = np.ones((n_train,)) / n_train
+            
+            indices = np.random.choice(n_train, n_train, replace=False, p=probb)
+            rand_idx = torch.LongTensor(indices)
+            head = heads[rand_idx].cuda()
+            tail = tails[rand_idx].cuda()
+            rela = relas[rand_idx].cuda()
+            head_idx = head_idxs[indices]
+            tail_idx = tail_idxs[indices]
+
             epoch_loss = 0
 
             if self.args.save and epoch==self.args.s_epoch:
                 self.save(os.path.join(self.args.task_dir, self.args.model + '.mdl'))
 
-            for h, t, r, h_idx, t_idx in batch_by_size(n_batch, head, tail, rela, head_idx, tail_idx, n_sample=n_train):
+            iters = 0
+            for h, t, r, h_idx, t_idx, idx, in batch_by_size(n_batch, head, tail, rela, head_idx, tail_idx, indices, n_sample=n_train):
                 self.model.zero_grad()
 
                 h_rand, t_rand = self.neg_sample(h, t, r, h_idx, t_idx, self.args.sample, self.args.loss)
               
                 # Bernoulli sampling to select (h', r, t) and (h, r, t')
                 prob = corrupter.bern_prob[r]
-                selection = torch.bernoulli(prob).type(torch.ByteTensor)
+                selection = torch.bernoulli(prob).type(torch.ByteTensor).cuda()
                 n_h = torch.LongTensor(h.cpu().numpy()).cuda()
                 n_t = torch.LongTensor(t.cpu().numpy()).cuda()
                 n_r = torch.LongTensor(r.cpu().numpy()).cuda()
@@ -228,8 +257,8 @@ class BaseModel(object):
                 n_h[selection] = h_rand[selection]
                 n_t[~selection] = t_rand[~selection]
                 
-                if not (self.args.sample=='bern'):
-                    self.update_cache(h, t, r, h_idx, t_idx)
+                if not (self.args.sample=='bern') and iters % self.args.lazy==0:
+                    self.update_cache(h, t, r, idx, h_idx, t_idx)
 
                 if self.args.loss == 'point':
                     p_loss = torch.sum(self.model.point_loss(h, t, r, 1))
@@ -240,13 +269,13 @@ class BaseModel(object):
                 
                 loss.backward()
                 self.optimizer.step()
+                self.remove_nan()
                 epoch_loss += loss.data.cpu().numpy()
+                iters += 1
             # get the time of each epoch
             self.time_tot += time.time() - start
-            print("Epoch: %d/%d, Loss=%.8f, Time=%.4f"%(epoch+1, n_epoch, epoch_loss/n_train, time.time()-start))
+            losses.append(round(epoch_loss/n_train, 4))
            
-            if self.args.remove:
-                self.remove_positive(self.args.remove)
                
             if (epoch+1) % self.args.epoch_per_test == 0:
                 # output performance 
@@ -266,7 +295,16 @@ class BaseModel(object):
                 if valid_mrr > best_mrr:
                     best_mrr = valid_mrr
                     best_str = out_str
-        return best_str
+        return best_mrr, best_str
+
+    def remove_nan(self,):
+        # avoid nan parameters
+        for p in self.model.parameters():
+            X = p.data.clone()
+            flag = X != X
+            X[flag] = 0
+            p.data.copy_(X)
+
 
     def test_link(self, test_data, n_ent, heads, tails, filt=True):
         mrr_tot = 0.
