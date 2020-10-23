@@ -43,11 +43,14 @@ Get dataset from THUNLP-OpenKE
 
 ### NSCaching+scratch on FB15K
 
-    python -W ignore train.py
+    python train.py
 
 ### NSCaching (auto) on FB15K
 
-    python -W ignore auto_search.py   
+    python auto_search.py   
+or
+    bash run_fb15k.sh
+
 
 # Future Works
 

@@ -5,6 +5,7 @@ import numpy as np
 from corrupter import BernCorrupter
 from read_data import DataLoaderAuto
 from utils import logger_init, plot_config_auto
+import warnings
 from base_auto import BaseModel
 
 from smac.configspace import ConfigurationSpace
@@ -118,6 +119,7 @@ if __name__ == '__main__':
     os.environ["MKL_NUM_THREADS"] = "5"
     os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
     torch.set_num_threads(5)
+    warnings.filterwarnings("ignore", category=UserWarning)
 
     # AutoML based on SMAC
     cs = ConfigurationSpace()
