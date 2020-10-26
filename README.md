@@ -8,7 +8,7 @@ Readers are welcomed to fork this repository to reproduce the experiments and fo
     @inproceedings{zhang2019nscaching,
       title={NSCaching: Simple and Efficient Negative Sampling for Knowledge Graph Embedding},
       author={Zhang, Yongqi and Yao, Quanming and Shao, Yingxia and Chen, Lei},
-      booktitle={2019 IEEE 35th International Conference on Data Engineering (ICDE)},
+      booktitle={International Conference on Data Engineering},
       pages={614--625},
       year={2019},
       organization={IEEE}
@@ -50,4 +50,6 @@ Get dataset from THUNLP-OpenKE
     python auto_search.py   
 or
     bash run_fb15k.sh
-
+    
+## New Opportunities
+- Interns, research assistants, and researcher positions are available. See [requirement](http://www.cse.ust.hk/~qyaoaa/pages/job-ad.pdf)
