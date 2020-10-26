@@ -47,9 +47,7 @@ Get dataset from THUNLP-OpenKE
 
 ### NSCaching (auto) on FB15K
 
-    python auto_search.py   
-or
-    bash run_fb15k.sh
+    python auto_search.py   or    bash run_fb15k.sh
     
 ## New Opportunities
 - Interns, research assistants, and researcher positions are available. See [requirement](http://www.cse.ust.hk/~qyaoaa/pages/job-ad.pdf)
