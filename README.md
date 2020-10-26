@@ -1,5 +1,5 @@
 # NSCaching
-The Code for our paper ["NSCaching: Simple and Efficient Negative Sampling for Knowledge Graph Embedding"](https://arxiv.org/abs/1812.06410) and this paper has been published in ICDE2019.
+The Code for our paper ["NSCaching: Simple and Efficient Negative Sampling for Knowledge Graph Embedding"](https://arxiv.org/abs/1812.06410) and the short paper has been published in ICDE2019 long version has been publised in VLDBJ.
 
 The extension of NSCaching: "Efficient, Simple and Automated Negative Sampling for Knowledge Graph Embedding" has been accepte by the VLDB Journal.
 
@@ -50,16 +50,4 @@ Get dataset from THUNLP-OpenKE
     python auto_search.py   
 or
     bash run_fb15k.sh
-
-
-# Future Works
-
-To easy the use of NSCaching, please find tools discussed in our AutoML survey paper:
-
-    @techreport{yao2018automl,
-      title={Taking Human out of Learning Applications: A Survey on Automated Machine Learning},
-      author={Yao, Quanming and Wang, Mengshuo},
-      institution={arXiv preprint arXiv:1810.13306},
-      year={2018}
-    }
 
