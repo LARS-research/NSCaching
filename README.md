@@ -1,5 +1,5 @@
 # NSCaching
-The Code for our paper ["NSCaching: Simple and Efficient Negative Sampling for Knowledge Graph Embedding"](https://arxiv.org/abs/1812.06410) and the short paper has been published in ICDE2019 long version has been publised in VLDBJ.
+The Code for our paper ["NSCaching: Simple and Efficient Negative Sampling for Knowledge Graph Embedding"](https://arxiv.org/abs/1812.06410) and the conference version has been published in ICDE2019 and long version has been publised in VLDBJ-2020.
 
 The extension of NSCaching: "Efficient, Simple and Automated Negative Sampling for Knowledge Graph Embedding" has been accepte by the VLDB Journal.
 
